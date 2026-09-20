@@ -45,6 +45,8 @@ uv run python main.py
 
 You do not need a second terminal: the client launches the server for you.
 
+New here? Start with the [architecture block diagram](#3-architecture) to see how all the parts fit together.
+
 ---
 
 ## 2. What is MCP?
@@ -71,6 +73,10 @@ Messages are exchanged as **JSON-RPC 2.0** and travel over a **transport**. This
 ---
 
 ## 3. Architecture
+
+![MCP Agent Hub architecture block diagram: the client process talks over STDIO to the server process, which holds tools, resources and prompts; file access goes through utils.py to the workspace folder](docs/architecture-block-diagram.png)
+
+The block diagram above shows the whole system. The numbered badges match the "How it works" list on its right. The same architecture as a plain-text diagram:
 
 ```
 +----------------------+
@@ -334,6 +340,9 @@ MCP-Agent-Hub/
 ├── workspace/                   the only folder the file tools may touch
 │   ├── example.txt
 │   └── notes.txt
+│
+├── docs/
+│   └── architecture-block-diagram.png   block diagram shown in this README
 │
 └── tests/
     ├── __init__.py
