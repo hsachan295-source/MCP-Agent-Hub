@@ -1,0 +1,3 @@
+Welcome to MCP Agent Hub.
+
+This file is exposed safely through an MCP resource and MCP tool.

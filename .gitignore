@@ -1,0 +1,18 @@
+# Virtual environments
+.venv/
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local secrets and editor settings
+.env
+.vscode/
+
+# Build output
+dist/
+build/
+*.egg-info/
+
+# Note: workspace/example.txt and workspace/notes.txt are intentionally NOT ignored.
