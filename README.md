@@ -95,7 +95,93 @@ Local Workspace
 
 The client and server are **two separate processes**. The client starts the server as a child process and the two exchange messages through the child's stdin and stdout pipes.
 
-The requests the client can send, in the order a session uses them:
+### The whole project at a glance
+
+This one picture shows **every part of the project** and how the parts connect: what you start, the two processes, the pipes between them, the server's building blocks, the only folder that can be touched, and the tests.
+
+```text
+                                     YOU (terminal)
+                                            | python main.py
+                                            v
+ +--------------------------------------------------------------------------------------+
+ | CLIENT PROCESS   (the program you start)                                             |
+ |                                                                                      |
+ |   main.py     entry point: puts src/ on sys.path, then calls client.main()           |
+ |   client.py   1. builds the command that starts the server (sys.executable -m ...)   |
+ |               2. stdio_client() launches it; ClientSession speaks MCP to it          |
+ |               3. initialize(), then list_tools / list_resources / list_prompts       |
+ |               4. demo: call_tool, read_resource, get_prompt, error-handling demo     |
+ |               5. interactive menu (options 0-10); every action goes through MCP      |
+ +--------------------------------------------------------------------------------------+
+                        | requests                          ^ replies
+                        v                                   |
+ +--------------------------------------------------------------------------------------+
+ | STDIO TRANSPORT   (pipes between the two processes)                                  |
+ |                                                                                      |
+ |   requests  -->  server's stdin    JSON-RPC 2.0, one message per line                |
+ |   replies   <--  server's stdout   JSON-RPC 2.0, one message per line                |
+ |   logs      <--  server's stderr   plain text, shown in your terminal                |
+ |   RULE: only protocol messages may go to stdout - never print() in the server        |
+ +--------------------------------------------------------------------------------------+
+                        | requests                          ^ replies
+                        v                                   |
+ +--------------------------------------------------------------------------------------+
+ | SERVER PROCESS   (started by the client:  python -m mcp_agent_hub.server)            |
+ |                                                                                      |
+ |   server.py   create_server(): builds an MCPServer (mcp SDK), registers everything   |
+ |               The SDK handles the handshake, JSON-RPC, argument validation, errors   |
+ |                                                                                      |
+ |   +------------------------+  +------------------------+  +------------------------+ |
+ |   | tools.py               |  | resources.py           |  | prompts.py             | |
+ |   | 13 tools = ACTIONS     |  | 4 resources + template |  | 4 prompts = MESSAGE    | |
+ |   | add_numbers, ...       |  | = CONTENT to read      |  | TEMPLATES for an AI    | |
+ |   | read_workspace_file    |  | app://about, ...       |  | explain_text ...       | |
+ |   +-----------+------------+  +-----------+------------+  +------------------------+ |
+ |               |                           |                                          |
+ |               +-------------+-------------+                                          |
+ |                             v                                                        |
+ |   +--------------------------------------------------------------------------------+ |
+ |   | utils.py   safe paths (2 layers), safe read/write, logging -> stderr           | |
+ |   +--------------------------------------------------------------------------------+ |
+ +--------------------------------------------------------------------------------------+
+                                            | tools & resources reach ONLY this folder
+                                            v
+                        +---------------------------------------+
+                        | workspace/   example.txt   notes.txt  |
+                        +---------------------------------------+
+
+ +--------------------------------------------------------------------------------------+
+ | tests/   (run with: pytest)  a separate program that checks everything above         |
+ |                                                                                      |
+ |   test_tools.py    calls the tool functions directly + the path-traversal attacks    |
+ |   test_server.py   talks to the server over MCP: in-memory, real STDIO, raw JSON-RPC |
+ |   test_client.py   runs the demo + the menu (scripted keyboard), connection failures |
+ +--------------------------------------------------------------------------------------+
+```
+
+Follow one request through the picture:
+
+1. You run `python main.py`. That starts the **client process** (`main.py` then `client.py`).
+2. The client starts the **server process** and connects to its stdin and stdout pipes (the STDIO transport).
+3. A request, for example `tools/call add_numbers`, travels **down** the requests pipe (the server's stdin) to `server.py`. The MCP SDK inside it validates the arguments and finds the right function in `tools.py`, `resources.py` or `prompts.py`.
+4. If that function needs a file, it goes through `utils.py`, which only allows the `workspace/` folder.
+5. The answer travels **back up** the server's stdout pipe to the client, which prints it. Log lines take a separate road, stderr, straight to your terminal.
+6. `tests/` is not part of the running system: it is a separate program that starts the same code and checks it.
+
+Which file to open for what:
+
+| I want to learn about or change... | Open |
+|---|---|
+| how the client starts and talks to the server | `src/mcp_agent_hub/client.py` |
+| how the server is built and what it registers | `src/mcp_agent_hub/server.py` |
+| a tool (a new action) | `src/mcp_agent_hub/tools.py` |
+| a resource (new content) | `src/mcp_agent_hub/resources.py` |
+| a prompt (a new message template) | `src/mcp_agent_hub/prompts.py` |
+| file safety, paths, logging | `src/mcp_agent_hub/utils.py` |
+
+### The requests a client can send
+
+In the order a session uses them:
 
 ```
 MCP Client
@@ -113,6 +199,113 @@ MCP Server
 ```
 
 `initialize()` always comes first: it is the handshake in which both sides announce their protocol version and what they support. (`list_resource_templates()` is the companion of `list_resources()` for URIs with a `{placeholder}`.)
+
+### How the project runs: step-by-step flow
+
+Everything starts with one command: `python main.py`. Read the diagram from top to bottom (time flows **downwards**). The left lane is the **client process**, the right lane is the **server process**, and every arrow is one JSON-RPC message.
+
+```text
+          CLIENT                                         SERVER
+      python main.py                         python -m mcp_agent_hub.server
+        (client.py)                                    (server.py)
+             |                                              |
+     1 START |  main.py calls client.main()                 |
+             |  run_client() builds the server command:     |
+             |    command = sys.executable                  |
+             |    args    = -m mcp_agent_hub.server         |
+             |== stdio_client() spawns the server =========>|
+             |                                              | create_server():
+             |                                              |   logging -> stderr
+             |                                              |   register 13 tools,
+             |                                              |   5 resources, 4 prompts
+             |                                              | run(stdio): waits for stdin
+             |                                              |
+ 2 HANDSHAKE |-- initialize (my version, features) -------->|
+             |<--------- result (name, version, features) --|
+             |-- notifications/initialized ---------------->|
+             |                                              |
+  3 DISCOVER |-- tools/list ------------------------------->|
+             |<------------ 13 tools + JSON input schemas --|
+             |-- resources/list  (+ templates) ------------>|
+             |<----------------- 4 resources + 1 template --|
+             |-- prompts/list ----------------------------->|
+             |<-------------- 4 prompts + their arguments --|
+             |                                              |
+       4 USE |-- tools/call add_numbers 10, 20 ------------>|
+             |                                              | check args, run tools.py
+             |                                              | log line -> stderr
+             |<----------------- 30.0   (isError = false) --|
+             |-- resources/read app://about --------------->|
+             |<-------------------------------- JSON text --|
+             |-- prompts/get beginner_teacher ------------->|
+             |<------------- prompt messages (role: user) --|
+             |-- tools/call divide_numbers 1, 0 ----------->|
+             |<--- Cannot divide by zero (isError = true) --|
+             |                                              |
+      5 STOP |  leaves the async with blocks                |
+             |-- closes the server's stdin (end of input) ->|
+             |                                              | sees end of input, exits
+```
+
+`-->` is a message from the client to the server (written to the server's stdin), `<--` is the reply (read from the server's stdout), `==>` starts the process, and text on the right of the SERVER lane is something the server does by itself.
+
+How to read it:
+
+* **1 START**: `main.py` calls the client. The client builds the command that starts the server (`sys.executable -m mcp_agent_hub.server`) and launches it as a **child process**. The server builds itself (`create_server()`), registers its tools, resources and prompts, and then simply waits for messages.
+* **2 HANDSHAKE**: the very first message must be `initialize`. Both sides announce their protocol version and features. Only after that may normal requests begin.
+* **3 DISCOVER**: the client asks *what exists*: the tools (with their input schemas), the resources and the prompts.
+* **4 USE**: the client calls tools, reads resources and fetches prompts. Notice the last call: a failing *tool* still gets a normal reply, flagged `isError = true`.
+* **5 STOP**: the client closes the server's stdin, the server sees the end of input and exits.
+
+Three channels are in play: requests travel on the server's **stdin**, replies come back on its **stdout**, and log lines go to **stderr**, straight to your terminal, never mixed with the protocol.
+
+### Inside the server: the journey of one tool call
+
+Phase 4 is where your own code runs. This diagram follows one call, `read_workspace_file("../secret.txt")`, through the server. That name ends in the right-hand branch (blocked); a normal name such as `example.txt` takes the left-hand branch.
+
+```text
+ tools/call   name = "read_workspace_file"   arguments = {"filename": "../secret.txt"}
+                                        | one JSON line arrives on the server's stdin
+                                        v
+ +----------------------------------------------------------------------------+
+ | MCP SDK  (MCPServer, created in server.py)                                 |
+ |   1. find the tool by name        -> unknown name: isError = true          |
+ |   2. validate the arguments against the tool's JSON schema (built from     |
+ |      the type hints)              -> wrong type / missing: isError = true  |
+ |   3. log_call wrapper logs 'tool requested: ...' to stderr                 |
+ +----------------------------------------------------------------------------+
+                                        |
+                                        v
+ +----------------------------------------------------------------------------+
+ | tools.py     read_workspace_file(filename)                                 |
+ |                calls utils.read_workspace_text(filename)                   |
+ +----------------------------------------------------------------------------+
+                                        |
+                                        v
+ +----------------------------------------------------------------------------+
+ | utils.py     resolve_safe_path(filename)      <- path-traversal protection |
+ |   layer 1  validate_filename(): rejects '..' 'C:\x' '/etc' ':' CON .exe    |
+ |   layer 2  resolved path must sit directly inside workspace/ (symlinks)    |
+ |   if either layer says no -> UnsafePathError                               |
+ +----------------------------------------------------------------------------+
+                                        |
+   +------------------------------------+---+
+   v                                        v
+   path is safe                             path is unsafe, or the file is missing
+   read the file (UTF-8, max 1 MB)          utils raises WorkspaceError
+                                            tools.py turns it into ToolError(message)
+   |                                        |
+   v                                        v
+   result: isError = false                  result: isError = true
+   content = the file's text                content = 'Error executing tool ...: message'
+   |                                        |
+   +------------------------------------+---+
+                                        |
+                                        v
+ one JSON line on the server's stdout -> client prints 'result: ...' or 'ERROR: ...'
+```
+
+Every tool follows the same shape: the SDK checks the request, the function in `tools.py` runs, and its result (or a `ToolError`) becomes one JSON line on stdout.
 
 ---
 
